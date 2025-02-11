@@ -1,0 +1,670 @@
+---
+title: "CTA-ED Exercise 2: dictionary-based methods"
+author: "Kaiyi Zhang"
+date: "2/14/2024"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+*This exercise relied on the twitter API, which is no longer available. However a new version of the academic API appears to have recently been made available again. Unsure how this will develop. We will use twitter data collected in 2020 for this exercise.*
+
+## Introduction
+
+In this tutorial, you will learn how to:
+
+* Use dictionary-based techniques to analyze text
+* Use common sentiment dictionaries
+* Create your own "dictionary"
+* Use the Lexicoder sentiment dictionary from @young_affective_2012
+
+## Setup 
+
+The hands-on exercise for this week uses dictionary-based methods for filtering and scoring words. Dictionary-based methods use pre-generated lexicons, which are no more than list of words with associated scores or variables measuring the valence of a particular word. In this sense, the exercise is not unlike our analysis of Edinburgh Book Festival event descriptions. Here, we were filtering descriptions based on the presence or absence of a word related to women or gender. We can understand this approach as a particularly simple type of "dictionary-based" method. Here, our "dictionary" or "lexicon" contained just a few words related to gender. 
+
+##  Load data and packages 
+
+Before proceeding, we'll load the remaining packages we will need for this tutorial.
+
+```{r, message=F}
+library(kableExtra)
+library(tidyverse) # loads dplyr, ggplot2, and others
+library(readr) # more informative and easy way to import data
+library(stringr) # to handle text elements
+library(tidytext) # includes set of functions useful for manipulating text
+library(quanteda) # includes functions to implement Lexicoder
+library(textdata)
+```
+
+```{r, message=F}
+library(academictwitteR) # for fetching Twitter data
+```
+
+First off: always check that you have the right working directory
+```{r}
+getwd()
+```
+
+
+In this exercise we'll be using another new dataset. The data were collected from the Twitter accounts of the top eight newspapers in the UK by circulation. You can see the names of the newspapers in the code below:
+
+```{r, eval=FALSE}
+# This is a code chunk to show the code that collected the data using the twitter API, back in 2020. 
+# You don't need to run this, and this chunk of code will be ignored when you knit to html, thanks to the 'eval=FALSE' command in the chunk option.
+
+newspapers = c("TheSun", "DailyMailUK", "MetroUK", "DailyMirror", 
+               "EveningStandard", "thetimes", "Telegraph", "guardian")
+
+tweets <-
+  get_all_tweets(
+    users = newspapers,
+    start_tweets = "2020-01-01T00:00:00Z",
+    end_tweets = "2020-05-01T00:00:00Z",
+    data_path = "data/sentanalysis/",
+    n = Inf,
+  )
+
+tweets <- 
+  bind_tweets(data_path = "data/sentanalysis/", output_format = "tidy")
+
+saveRDS(tweets, "data/sentanalysis/newstweets.rds")
+```
+
+
+![](data/sentanalysis/guardiancorona.png){width=100%}
+
+You can download the tweets data directly from the source in the following way: the data was collected by Chris Barrie and is stored on his Github page.
+
+```{r}
+tweets  <- readRDS(gzcon(url("https://github.com/cjbarrie/CTA-ED/blob/main/data/sentanalysis/newstweets.rds?raw=true")))
+```
+
+
+## Inspect and filter data 
+
+Let's have a look at the data:
+
+```{r}
+head(tweets)
+colnames(tweets)
+```
+
+Each row here is a tweets produced by one of the news outlets detailed above over a five month period, January--May 2020. Note also that each tweets has a particular date. We can therefore use these to look at any over time changes.
+
+We won't need all of these variables so let's just keep those that are of interest to us:
+
+```{r}
+
+tweets <- tweets %>%
+  select(user_username, text, created_at, user_name,
+         retweet_count, like_count, quote_count) %>%
+  rename(username = user_username,
+         newspaper = user_name,
+         tweet = text)
+
+```
+
+```{r, echo = F}
+tweets %>% 
+  arrange(created_at) %>%  #按列排列数据，默认升序，即最早的排在最前面
+  tail(5) %>%  #取最后五行数据
+  kbl() %>%  #把数据转化为表格模式，方便显示
+  kable_styling(c("striped", "hover", "condensed", "responsive")) #美化表格："striped"：添加条纹效果，提高可读性。"hover"：鼠标悬停时 高亮当前行。"condensed"：让表格更加 紧凑。"responsive"：让表格在 不同屏幕大小 下自适应显示。
+```
+
+We manipulate the data into tidy format again, unnesting each token (here: words) from the tweet text. 
+
+```{r}
+tidy_tweets <- tweets %>% 
+  mutate(desc = tolower(tweet)) %>%  #创建新的列desc，放小写的tweet
+  unnest_tokens(word, desc) %>%  #拆分单词，储存到“word”里，拆分刚刚desc里的
+  filter(str_detect(word, "[a-z]"))  #只保留“word”中至少包含一个英文字母的小写单词
+```
+
+We'll then tidy this further, as in the previous example, by removing stop words:
+
+```{r}
+tidy_tweets <- tidy_tweets %>%
+    filter(!word %in% stop_words$word)  #去除停用词
+```
+
+## Get sentiment dictionaries
+
+Several sentiment dictionaries come bundled with the <tt>tidytext</tt> package. These are:
+
+* `AFINN` from [Finn Årup Nielsen](http://www2.imm.dtu.dk/pubdb/views/publication_details.php?id=6010),
+* `bing` from [Bing Liu and collaborators](https://www.cs.uic.edu/~liub/FBS/sentiment-analysis.html), and
+* `nrc` from [Saif Mohammad and Peter Turney](http://saifmohammad.com/WebPages/NRC-Emotion-Lexicon.htm)
+
+We can have a look at some of these to see how the relevant dictionaries are stored. 
+
+```{r}
+get_sentiments("afinn")
+```
+
+```{r}
+get_sentiments("bing")
+```
+
+```{r}
+get_sentiments("nrc")
+```
+
+What do we see here. First, the `AFINN` lexicon gives words a score from -5 to +5, where more negative scores indicate more negative sentiment and more positive scores indicate more positive sentiment.  The `nrc` lexicon opts for a binary classification: positive, negative, anger, anticipation, disgust, fear, joy, sadness, surprise, and trust, with each word given a score of 1/0 for each of these sentiments. In other words, for the `nrc` lexicon, words appear multiple times if they enclose more than one such emotion (see, e.g., "abandon" above). The `bing` lexicon is most minimal, classifying words simply into binary "positive" or "negative" categories. 
+
+Let's see how we might filter the texts by selecting a dictionary, or subset of a dictionary, and using `inner_join()` to then filter out tweet data. We might, for example, be interested in fear words. Maybe, we might hypothesize, there is a uptick of fear toward the beginning of the coronavirus outbreak. First, let's have a look at the words in our tweet data that the `nrc` lexicon codes as fear-related words.
+
+```{r}
+
+nrc_fear <- get_sentiments("nrc") %>% 
+  filter(sentiment == "fear")
+
+tidy_tweets %>%
+  inner_join(nrc_fear) %>%  #筛选推文中出现的“恐惧”相关单词。
+  count(word, sort = TRUE)  #统计每个单词的出现频率，并按降序排列。
+
+```
+
+We have a total of 1,174 words with some fear valence in our tweet data according to the `nrc` classification. Several seem reasonable (e.g., "death," "pandemic"); others seems less so (e.g., "mum," "fight").
+
+## Sentiment trends over time
+
+Do we see any time trends? First let's make sure the data are properly arranged in ascending order by date. We'll then add column, which we'll call "order," the use of which will become clear when we do the sentiment analysis.  #我们是否能观察到任何时间趋势？首先，让我们确保数据按照日期的升序正确排序。然后，我们将添加一个名为 "order" 的新列，其用途将在进行情感分析时变得更加清晰
+
+```{r}
+#gen data variable, order and format date
+tidy_tweets$date <- as.Date(tidy_tweets$created_at)  #将其转换为日期格式（YYYY-MM-DD），去掉具体时间部分。这样可以按日期进行分析。
+
+tidy_tweets <- tidy_tweets %>%
+  arrange(date)  #按 date 列 升序 排列推文（从最早到最近）。
+
+tidy_tweets$order <- 1:nrow(tidy_tweets)  #nrow(tidy_tweets)：获取 tidy_tweets 的总行数。1:nrow(tidy_tweets)：为每一行分配 从 1 开始的编号，存入 order 列。order 代表推文在时间上的 顺序索引，后续可以用于可视化或回归分析。
+
+```
+
+Remember that the structure of our tweet data is in a one token (word) per document (tweet) format. In order to look at sentiment trends over time, we'll need to decide over how many words to estimate the sentiment. 
+
+In the below, we first add in our sentiment dictionary with `inner_join()`. We then use the `count()` function, specifying that we want to count over dates, and that words should be indexed in order (i.e., by row number) over every 1000 rows (i.e., every 1000 words). 
+
+This means that if one date has many tweets totalling >1000 words, then we will have multiple observations for that given date; if there are only one or two tweets then we might have just one row and associated sentiment score for that date. 
+
+We then calculate the sentiment scores for each of our sentiment types (positive, negative, anger, anticipation, disgust, fear, joy, sadness, surprise, and trust) and use the `spread()` function to convert these into separate columns (rather than rows). Finally we calculate a net sentiment score by subtracting the score for negative sentiment from positive sentiment.  #请记住，我们的推文数据结构是“每个单词作为一个文档（推文）”的格式。为了分析情绪趋势随时间的变化，我们需要决定在多少个单词的范围内计算情绪。
+在下面的代码中，我们首先使用 `inner_join()` 添加情绪词典。然后，我们使用 `count()` 计算 每个日期的情绪词数，并按照推文的顺序（即行号）每 1000 个单词作为一个区间进行统计。
+
+这意味着：
+- 如果某一天的推文总计 超过 1000 个单词，那么这一天可能会有多个情绪得分记录；
+- 如果某一天 只有一两条推文，可能该日期 只有一行数据 及其对应的情绪得分。
+
+接下来，我们计算 各个情绪类型（如：积极、消极、愤怒、期待、厌恶、恐惧、快乐、悲伤、惊讶和信任）的得分，并使用 `spread()` 将这些情绪类型转换为独立的列（而不是单独的行）。
+
+最后，我们计算 净情绪得分（Net Sentiment Score）：
+积极-消极=净情绪得分
+
+
+```{r}
+#get tweet sentiment by date
+tweets_nrc_sentiment <- tidy_tweets %>%
+  inner_join(get_sentiments("nrc")) %>%  #inner_join() 使 tidy_tweets 只保留出现在 NRC 词典中的 情绪相关单词。
+  count(date, index = order %/% 1000, sentiment) %>% #按日期分组、每 1000 个单词 作为一个时间窗口（滚动窗口）、按情绪词分组，计算数量
+  spread(sentiment, n, fill = 0) %>%  #spread() 将 sentiment 这一列转换为 多个独立列（即 宽格式）。fill = 0 表示如果某个情绪类型没有单词，则填充 0，避免 NA 值。
+  mutate(sentiment = positive - negative) #计算净情绪得分
+
+tweets_nrc_sentiment %>%
+  ggplot(aes(date, sentiment)) +
+  geom_point(alpha=0.5) +   #geom_point()：绘制 散点图，每个点表示某一天的 净情绪得分。alpha=0.5：设置透明度，防止数据点过密导致遮挡。
+  geom_smooth(method= loess, alpha=0.25) #geom_smooth()：绘制 平滑趋势曲线。method = loess：LOESS（局部加权回归）是一种非参数平滑方法，适用于数据量相对较小的情况。能更好地捕捉数据的局部模式和非线性趋势。alpha=0.25：设定置信区间的透明度，即曲线周围的阴影区域（表示不确定性）。数值越小，阴影越浅，曲线越清晰。
+
+```
+
+How do our different sentiment dictionaries look when compared to each other? We can then plot the sentiment scores over time for each of our sentiment dictionaries like so:
+
+```{r}
+
+tidy_tweets %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(date, index = order %/% 1000, sentiment) %>%
+  spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment = positive - negative) %>%
+  ggplot(aes(date, sentiment)) +
+  geom_point(alpha=0.5) +
+  geom_smooth(method= loess, alpha=0.25) +
+  ylab("bing sentiment") #设置Y轴的名字
+
+tidy_tweets %>%
+  inner_join(get_sentiments("nrc")) %>%
+  count(date, index = order %/% 1000, sentiment) %>%
+  spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment = positive - negative) %>%
+  ggplot(aes(date, sentiment)) +
+  geom_point(alpha=0.5) +
+  geom_smooth(method= loess, alpha=0.25) +
+  ylab("nrc sentiment") 
+
+tidy_tweets %>%
+  inner_join(get_sentiments("afinn")) %>%
+  group_by(date, index = order %/% 1000) %>% 
+  summarise(sentiment = sum(value)) %>% 
+  ggplot(aes(date, sentiment)) +
+  geom_point(alpha=0.5) +
+  geom_smooth(method= loess, alpha=0.25) +
+  ylab("afinn sentiment")
+
+
+```
+
+We see that they do look pretty similar... and interestingly it seems that overall sentiment positivity *increases* as the pandemic breaks.
+
+## Domain-specific lexicons
+
+Of course, list- or dictionary-based methods need not only focus on sentiment, even if this is one of their most common uses. In essence, what you'll have seen from the above is that sentiment analysis techniques rely on a given lexicon and score words appropriately. And there is nothing stopping us from making our own dictionaries, whether they measure sentiment or not. In the data above, we might be interested, for example, in the prevalence of mortality-related words in the news. As such, we might choose to make our own dictionary of terms. What would this look like?
+
+A very minimal example would choose, for example, words like "death" and its synonyms and score these all as 1. We would then combine these into a dictionary, which we've called "mordict" here. 
+当然，基于列表或词典的方法不仅仅用于情感分析，尽管这是它们最常见的应用之一。从上面的分析可以看出，情感分析技术依赖于特定的词典，并根据词典对单词进行打分。然而，我们完全可以创建自己的词典，不论其是否用于情感分析。
+
+例如，在上述数据中，我们可能对新闻中与死亡相关的词汇的出现频率感兴趣。因此，我们可以选择创建一个自定义词典，专门用于检测这些词语的使用情况。
+
+一个最简单的示例可能包括：
+选择 "death" 及其同义词。
+为这些词赋值 1，表示它们与死亡相关。
+组合这些词形成一个自定义词典，这里我们称其为 "mordict"（死亡词典）。
+```{r}
+word <- c('death', 'illness', 'hospital', 'life', 'health',
+             'fatality', 'morbidity', 'deadly', 'dead', 'victim')
+value <- c(1, 1, 1, 1, 1, 1, 1, 1, 1, 1)
+mordict <- data.frame(word, value) #将 word 和 value 组合成数据框。
+mordict
+```
+
+We could then use the same technique as above to bind these with our data and look at the incidence of such words over time. Combining the sequence of scripts from above we would do the following:
+
+```{r}
+tidy_tweets %>%
+  inner_join(mordict) %>% #只保留 tidy_tweets 数据中出现在 mordict词典里的单词。
+  group_by(date, index = order %/% 1000) %>% #统计每 1000 个单词的死亡相关词汇数量
+  summarise(morwords = sum(value)) %>% #计算每个时间窗口内死亡相关单词的总数（value 在 mordict 里都为 1，所以直接求和）。morwords 代表每 1000 个单词中死亡相关词汇的数量。
+  ggplot(aes(date, morwords)) + 
+  geom_bar(stat= "identity") + #直接使用 morwords 作为柱子的高度
+  ylab("mortality words")
+
+
+```
+
+The above simply counts the number of mortality words over time. This might be misleading if there are, for example, more or longer tweets at certain points in time; i.e., if the length or quantity of text is not time-constant. 
+
+Why would this matter? Well, in the above it could just be that we have more mortality words later on because there are just more tweets earlier on. By just counting words, we are not taking into account the *denominator*.
+
+An alternative, and preferable, method here would simply take a character string of the relevant words. We would then sum the total number of words across all tweets over time. Then we would filter our tweet words by whether or not they are a mortality word or not, according to the dictionary of words we have constructed. We would then do the same again with these words, summing the number of times they appear for each date. 
+
+After this, we join with our data frame of total words for each date. Note that here we are using `full_join()` as we want to include dates that appear in the "totals" data frame that do not appear when we filter for mortality words; i.e., days when mortality words are equal to 0. We then go about plotting as before.上面的方法仅仅计算了死亡相关词汇的数量，但这种方法可能会产生误导。为什么呢？
+
+例如，某些时间点可能推文的数量更多或推文本身更长，即文本的长度或数量并不随时间保持恒定。
+
+为什么这很重要？
+在上面的计算方式中，某个时间段死亡相关词汇数量的增加可能只是因为该时间段的推文总数较多，而不是因为人们讨论死亡相关话题的比例上升。
+换句话说，我们的计算没有考虑分母（所有推文的总词数）。
+
+改进的方法
+更合理的方式是：
+
+计算总词数：
+统计所有推文中单词的总数（包括死亡相关词和其他词）。
+计算死亡相关词数：
+使用我们构建的词典（mordict），筛选推文中的死亡相关词，并计算其出现的总次数。
+计算死亡词占比：
+计算 死亡相关词数量 / 总词数，得到相对频率。
+使用 full_join() 处理零值情况：
+full_join() 确保即使某些日期没有死亡相关词，这些日期仍然出现在数据集中（即 morwords = 0）。
+可视化：
+绘制死亡相关词的占比随时间变化的趋势图。
+
+```{r}
+mordict <- c('death', 'illness', 'hospital', 'life', 'health',
+             'fatality', 'morbidity', 'deadly', 'dead', 'victim')
+
+#get total tweets per day (no missing dates so no date completion required)
+totals <- tidy_tweets %>%
+  mutate(obs=1) %>%
+  group_by(date) %>%
+  summarise(sum_words = sum(obs))
+
+#plot
+tidy_tweets %>%
+  mutate(obs=1) %>%
+  filter(grepl(paste0(mordict, collapse = "|"),word, ignore.case = T)) %>% 
+  # | 表示 “或”，用于匹配 word 列中是否包含这些单词。grepl() 用于匹配字符串，如果 word 列中的单词属于 mordict，则返回 TRUE。ignore.case = T 忽略大小写（如 "Death" 和 "death" 视为相同）。
+  group_by(date) %>%
+  summarise(sum_mwords = sum(obs)) %>%
+  full_join(totals, word, by="date") %>% #连接totals表（其中sum_words是每日推文总单词数）。full_join() 确保即使某些日期没有死亡相关词，这些日期也仍然保留（即 sum_mwords = 0）。
+  mutate(sum_mwords= ifelse(is.na(sum_mwords), 0, sum_mwords), #处理 NA值：如果sum_mwords 为空（即当天没有死亡相关词），则赋值为 0。
+         pctmwords = sum_mwords/sum_words) %>% #计算死亡相关词占比（死亡词数 / 总单词数）
+  ggplot(aes(date, pctmwords)) +
+  geom_point(alpha=0.5) +
+  geom_smooth(method= loess, alpha=0.25) +
+  xlab("Date") + ylab("% mortality words")
+
+
+```
+
+## Using Lexicoder
+
+The above approaches use general dictionary-based techniques that were not designed for domain-specific text such as news text. The Lexicoder Sentiment Dictionary, by @young_affective_2012 was designed specifically for examining the affective content of news text. In what follows, we will see how to implement an analysis using this dictionary.
+
+We will conduct the analysis using the `quanteda` package. You will see that we can tokenize text in a similar way using functions included in the quanteda package. 
+
+With the `quanteda` package we first need to create a "corpus" object, by declaring our tweets a corpus object. Here, we make sure our date column is correctly stored and then create the corpus object with the `corpus()` function. Note that we are specifying the `text_field` as "tweet" as this is where our text data of interest is, and we are including information on the date that tweet was published. This information is specified with the `docvars` argument. You'll see then that the corpus consists of the text and so-called "docvars," which are just the variables (columns) in the original dataset. Here, we have only included the date column.
+上面的方法使用了通用的基于词典的技术，但这些技术并不是专门为新闻文本等特定领域的文本设计的。
+
+Lexicoder Sentiment Dictionary（LSD），由 @young_affective_2012 提出，专门用于分析新闻文本中的情感内容。接下来，我们将学习如何使用该词典进行情感分析。
+
+我们将使用 quanteda 进行分析
+在 quanteda 包中，我们可以使用类似的方法对文本进行 分词（tokenization），但首先需要创建一个语料库对象（corpus object）。
+
+1️⃣ 创建 corpus 语料库
+确保 date 列存储正确。
+使用 corpus() 函数创建 corpus 对象。
+指定 text_field = "tweet"，因为推文文本存储在 tweet 这一列。
+使用 docvars 参数存储额外的文档变量（如 date），方便后续分析。
+
+```{r}
+tweets$date <- as.Date(tweets$created_at)
+
+tweet_corpus <- corpus(tweets, text_field = "tweet", docvars = "date")
+#指定 tweet 列为文本字段，即要分析的文本数据。
+#将 date 作为元数据（document variable, docvar），即每条推文的时间信息。
+```
+
+
+We then tokenize our text using the `tokens()` function from quanteda, removing punctuation along the way:
+```{r}
+toks_news <- tokens(tweet_corpus, remove_punct = TRUE) #去除标点符号
+```
+
+We then take the `data_dictionary_LSD2015` that comes bundled with `quanteda` and and we select only the positive and negative categories, excluding words deemed "neutral." After this, we are ready to "look up" in this dictionary how the tokens in our corpus are scored with the `tokens_lookup()` function. 
+接下来，我们使用 `quanteda` 自带的 `data_dictionary_LSD2015` 词典，并仅选择“积极（positive）”和“消极（negative）”类别，排除被认为是“中性（neutral）”的词汇。  
+
+完成此步骤后，我们就可以使用 `tokens_lookup()` 函数，在该词典中查找语料库中的分词，并为其分配相应的情感分数。
+```{r}
+# select only the "negative" and "positive" categories
+data_dictionary_LSD2015_pos_neg <- data_dictionary_LSD2015[1:2] #仅选择前两个类别（积极和消极），排除中性词，以确保情感分析更聚焦。
+toks_news_lsd <- tokens_lookup(toks_news, dictionary = data_dictionary_LSD2015_pos_neg)
+#tokens_lookup() 用于在 分词数据 (toks_news) 中查找匹配的情感词。
+#dictionary = data_dictionary_LSD2015_pos_neg：指定 Lexicoder 词典（仅包含积极和消极词）作为查找标准。该函数会将 toks_news中的单词与词典比对，并标记它们的情感类别（positive 或 negative）。结果 toks_news_lsd 是一个 tokens 对象，其中保留了所有匹配到的情感词。
+```
+
+This creates a long list of all the texts (tweets) annotated with a series of 'positive' or 'negative' annotations depending on the valence of the words in that text. The creators of `quanteda` then recommend we generate a document feature matric from this. Grouping by date, we then get a dfm object, which is a quite convoluted list object that we can plot using base graphics functions for plotting matrices.这一步会生成一个长列表，其中包含所有推文，并根据其中单词的情感极性（valence）被标注为 "positive"（积极）或 "negative"（消极）。  
+
+`quanteda` 的开发者建议我们将这些数据转换为文档特征矩阵（DFM, Document-Feature Matrix），以便更好地进行分析。接下来，我们按照 日期（date）分组，将推文转换为 dfm 对象。  
+
+dfm 对象是一个 复杂的列表对象，但可以使用 基础 R 图形函数（base graphics functions） 进行可视化，例如 绘制矩阵图来展示情感趋势。
+
+```{r}
+# create a document document-feature matrix and group it by date
+dfmat_news_lsd <- dfm(toks_news_lsd) %>%  
+  dfm_group(groups = date)#dfm_group(groups = date)将推文按日期汇总，便于观察每日情感趋势。
+
+# plot positive and negative valence over time
+matplot(dfmat_news_lsd$date, dfmat_news_lsd, type = "l", lty = 1, col = 1:2,
+        ylab = "Frequency", xlab = "") 
+#dfmat_news_lsd$date：x 轴（日期），表示推文的时间。
+#dfmat_news_lsd：y 轴（情感词频率）。
+#type = "l"：绘制折线图（line plot）。
+#lty = 1：设定线型，1 代表实线。
+#col = 1:2：不同情感类别使用不同颜色：col = 1（黑色）：代表 "positive"（积极情感）。col = 2（红色）：代表 "negative"（消极情感）。
+
+grid() #添加网格线，增强可读性
+legend("topleft", col = 1:2, legend = colnames(dfmat_news_lsd), lty = 1, bg = "white")
+#添加图例：topleft图例位；col = 1:2	颜色，1（黑色）用于 "positive"，2（红色）用于 "negative"；legend = colnames(dfmat_news_lsd)图例文本，使用dfmat_news_lsd的列名（"positive" 和 "negative"）；lty = 1	线型，与 matplot() 中的线型一致（1 代表实线）；bg = "white"	图例背景色，设置为白色，防止遮挡数据
+
+# plot overall sentiment (positive  - negative) over time
+
+plot(dfmat_news_lsd$date, dfmat_news_lsd[,"positive"] - dfmat_news_lsd[,"negative"], 
+     type = "l", ylab = "Sentiment", xlab = "")
+#dfmat_news_lsd$date	x 轴：日期dfmat_news_lsd[,"positive"] - dfmat_news_lsd[,"negative"]	y 轴：每日净情感得分（positive - negative）
+
+grid()
+abline(h = 0, lty = 2) #abline(h = 0, lty = 2) 在y=0处添加一条虚线，用于标记情感的中立点：线上方：情感整体偏正面 ；线下方：情感整体偏负面 
+
+```
+
+Alternatively, we can recreate this in tidy format as follows:
+
+```{r}
+negative <- dfmat_news_lsd@x[1:121]
+positive <- dfmat_news_lsd@x[122:242]
+date <- dfmat_news_lsd@Dimnames$docs
+
+
+tidy_sent <- as.data.frame(cbind(negative, positive, date))
+
+tidy_sent$negative <- as.numeric(tidy_sent$negative)
+tidy_sent$positive <- as.numeric(tidy_sent$positive)
+tidy_sent$sentiment <- tidy_sent$positive - tidy_sent$negative
+tidy_sent$date <- as.Date(tidy_sent$date)
+```
+
+And plot accordingly:
+
+```{r}
+tidy_sent %>%
+  ggplot() +
+  geom_line(aes(date, sentiment))
+```
+
+## Exercises
+
+1. Take a subset of the tweets data by "user_name" These names describe the name of the newspaper source of the Twitter account. Do we see different sentiment dynamics if we look only at different newspaper sources?
+```{r}
+# go back to token element and inspect docvars
+docvars(toks_news) # ok all docvars are there 提取toks_news
+
+# look at how many different newspaper we have in the dataset
+unique(docvars(toks_news)$username) #获取toks_news语料库中的唯一用户名列表，即推文的发布者（用户名）
+```
+
+```{r}
+# recreate a document-feature matrix but instead of grouping it by date, we group it by 'username' (aka newspapers)
+dfm_news_lsd <- dfm(toks_news_lsd) %>% 
+  dfm_group(groups = username)  #按 username（用户名）分组，合并该用户所有推文的情感词频
+
+# convert it to a dataframe so it's easier to use
+tidy_dfm_news_lsd <- dfm_news_lsd %>%
+  convert(to = "data.frame") %>% #将 dfm_news_lsd 转换为 data.frame，便于在 tidyverse 中操作。
+  rename("newspaper" = doc_id) %>% # when converting to data.frame, R called our grouping variable 'doc_id'. We rename it 'newspaper' instead.将 doc_id 重命名为 newspaper
+  mutate(sentiment = positive - negative) # create variable for overall sentiment 计算整体情感得分 正的积极，负的消极
+
+# plot by newspaper
+tidy_dfm_news_lsd %>%
+  ggplot() + # when we enter ggplot environment we need to use '+' not '%>%', 
+  geom_point(aes(x=reorder(newspaper, -sentiment), y=sentiment)) + # reordering newspaper variable so it is displayed from most negative to most positive 按 sentiment 值降序（从负到正）排列 newspaper。负面新闻（最消极）在上方，正面新闻（最积极）在下方。
+  coord_flip() + # pivot plot by 90 degrees 旋转图表90度
+  xlab("Newspapers") + # label x axis 
+  ylab("Overall tweet sentiment (negative to positive)") + # label y axis
+  theme_minimal() # pretty graphic theme 美化图表，去除网格线和背景
+```
+Difficult to interpret... Tabloids (The Daily Mirror, the Sun and the Daily Mail) seems to write overall more negative tweets than more traditional newspapers. This is especially true for The Daily Mirror. Overall it may be interesting to note that the more left-leaning papers (the Daily Mirror and the Guardian) also appear the most negative within their respective genre (tabloids and non-tabloid newspapers).难以解读……
+
+小报（《每日镜报》（The Daily Mirror）、《太阳报》（The Sun）和《每日邮报》（The Daily Mail））的推文整体上比传统报纸更消极，其中《每日镜报》尤其显著。  
+
+总体来看，值得注意的是，更偏左翼的报纸（如《每日镜报》和《卫报》）在各自类别中（小报和非小报）都表现出较为负面的情绪倾向。
+
+
+Because many of you tried to analyse sentiment not just by newspaper but by newspaper 
+_and_ by date, I include code to do this.
+```{r}
+# recreate a document-feature matrix but instead of grouping it by date, we group it by 'username' (aka newspapers)
+dfm_news_lsd <- dfm(toks_news_lsd) %>% 
+  dfm_group(groups = interaction(username, date)) # we group by interaction variable between newspaper and date
+
+# convert it to a dataframe so it's easier to use
+tidy_dfm_news_lsd <- dfm_news_lsd %>%
+  convert(to = "data.frame") 
+
+head(tidy_dfm_news_lsd) # inspect
+# the interaction has batched together newspaper name and date (e.g. DailyMailUK.2020-01-01). 
+
+#We want to separate them into two distinct variables. We can do it using the command extract() and regex. It's easy because the separation is always a .
+tidy_dfm_news_lsd <- tidy_dfm_news_lsd %>%
+  extract(doc_id, into = c("newspaper", "date"), regex = "([a-zA-Z]+)\\.(.+)") %>%
+  mutate(date = as.Date(date)) # clarify to R that this variable is a date
+#extract() 用于基于正则表达式拆分字符串。([a-zA-Z]+) → 匹配 newspaper（新闻来源），由字母构成（如 "BBC"、"Guardian"）。\\. → 匹配 .（点号），用于分隔 newspaper 和 date。(.+) → 匹配 date（日期部分），如 "2025-02-01"。
+
+head(tidy_dfm_news_lsd) # inspect
+# nice! now we again have two distinct clean variables called 'newspaper' and 'date'.
+
+tidy_dfm_news_lsd <- tidy_dfm_news_lsd %>%
+  mutate(sentiment = positive - negative) # recreate variable for overall sentiment
+
+
+tidy_dfm_news_lsd %>%
+  ggplot(aes(x=date, y=sentiment)) +
+  geom_point(alpha=0.5) + # plot points
+  geom_smooth(method= loess, alpha=0.25) + # plot smooth line
+  facet_wrap(~newspaper) + # 'facetting' means multiplying the plots so that there is one plot for each member of the group (here, sentiment) that way you can easily compare trend across group.
+  xlab("date") + ylab("overall sentiment (negative to positive)") +
+  ggtitle("Tweet sentiment trend across 8 British newspapers") +
+  theme_minimal()
+```
+
+2. Build your own (minimal) dictionary-based filter technique and plot the result
+```{r}
+trans_words <- c('trans', 'transgender', 'trans rights', 'trans rights activists', 'transphobic', 'terf', 'terfs', 'transphobia', 'transphobes', 'gender critical', 'LGBTQ', 'LGBTQ+')
+
+#get total tweets per day (no missing dates so no date completion required)
+totals_newspaper <- tidy_tweets %>%
+  mutate(obs=1) %>%
+  group_by(newspaper) %>%
+  summarise(sum_words = sum(obs))
+
+#plot
+tidy_tweets %>%
+  mutate(obs=1) %>%
+  filter(grepl(paste0(trans_words, collapse = "|"), word, ignore.case = T)) %>%
+  group_by(newspaper) %>%
+  summarise(sum_mwords = sum(obs)) %>%
+  full_join(totals_newspaper, word, by="newspaper") %>%
+  mutate(sum_mwords= ifelse(is.na(sum_mwords), 0, sum_mwords),
+         pcttranswords = sum_mwords/sum_words) %>% #处理 NA 并计算跨性别相关词的占比
+  ggplot(aes(x=reorder(newspaper, -pcttranswords), y=pcttranswords)) +
+  geom_point() +
+  xlab("newspaper") + ylab("% words referring to trans or terfs") +
+  coord_flip() + #旋转图表，使 新闻名称在 Y 轴
+  theme_minimal()
+```
+The Sun looks like it discusses trans people and trans rights (or transphobia) particularly often.
+
+```{r, eval=FALSE}
+# I'm gonna create a dictionary with two categories (it could be only one but I'm feeling fancy), one for words referring to trans people, and one for words referring to transphobes/anti-trans rights
+trans_dict <- dictionary(list(trans = c('trans', 'transgender', 'trans rights', 'trans rights activists', 'LGBTQ', 'LGBTQ+'),
+                              terf = c('transphobic', 'terf', 'terfs', 'transphobia', 'transphobes', 'gender critical')))
+
+# back to tokens object
+dfm_dict_trans <- toks_news %>%
+  tokens_lookup(dictionary = trans_dict) %>% # look up the occurrence of my dictionaries
+  dfm() %>% # turn into dfm
+  dfm_group(groups = username) %>% # group by newspaper
+  convert(to = "data.frame") %>% # convert it to a dataframe
+  rename("newspaper" = doc_id) %>% # rename variable 
+  full_join(totals_newspaper, word, by="newspaper")
+  
+# then just tweak the same code as before
+tidy_dfm_trans <- dfm_trans %>%  #？？？无法运行
+  dfm_group(groups = newspaper) %>% # we group by newspaper
+  convert(to = "data.frame") %>% # convert it to a dataframe
+  rename("newspaper" = doc_id) # rename variable
+
+# plot by newspaper
+tidy_dfm_trans %>%
+  ggplot() + # when we enter ggplot environment we need to use '+' not '%>%', 
+  geom_point(aes(x=reorder(newspaper, -sentiment), y=sentiment)) + # reordering newspaper variable so it is displayed from most negative to most positive
+  coord_flip() + # pivot plot by 90 degrees
+  xlab("Newspapers") + # label x axis
+  ylab("Overall tweet sentiment (negative to positive)") + # label y axis
+  theme_minimal() # pretty graphic theme
+```
+
+
+```{r}
+#plot
+tidy_tweets %>%
+  mutate(obs=1) %>%
+  filter(grepl(paste0(mordict, collapse = "|"), word, ignore.case = T)) %>%
+  group_by(date) %>%
+  summarise(sum_mwords = sum(obs)) %>%
+  full_join(totals, word, by="date") %>%
+  mutate(sum_mwords= ifelse(is.na(sum_mwords), 0, sum_mwords),
+         pctmwords = sum_mwords/sum_words) %>%
+  ggplot(aes(date, pctmwords)) +
+  geom_point(alpha=0.5) +
+  geom_smooth(method= loess, alpha=0.25) +
+  xlab("Date") + ylab("% mortality words")
+
+
+```
+
+3. Apply the Lexicoder Sentiment Dictionary to the news tweets, but break down the analysis by newspaper
+
+3.1 make sure I have the packages
+```{r} 
+library(quanteda) 
+library(tidyverse)
+```
+
+3.2 build a corpus, use tweet as text data, use newspaper as extra variable
+```{r}
+tweetscorpus1 <- corpus(tweets, text_field = "tweet", docvars = "newspaper")
+```
+3.3 create a new variable "token_news", token text and remove punctuation
+```{r}
+token_news <- tokens(tweetscorpus1, remove_punct = TRUE)
+```
+
+3.4 create a new dictionary based on LSD dictionary, select only positive and negative words to narrow down the analysis scale
+```{r}
+sentimental_words <- data_dictionary_LSD2015[1:2]
+```
+
+3.5 create a new variable, search for sentimental words
+```{r}
+token_news1 <-tokens_lookup(token_news, dictionary = sentimental_words)
+```
+
+3.6 create a new variable, sort sentimental words by newspaper
+```{r}
+dfmat_news1_lsd <- dfm(token_news1) %>%  
+  dfm_group(groups = newspaper)
+
+convert(dfmat_news1_lsd, to="data.frame")
+```
+
+
+3.7 transfer to frame
+```{r}
+tidy_news1 <- dfmat_news1_lsd %>%
+  convert(to = "data.frame") %>% 
+  rename("newspaper" = doc_id) %>% 
+  mutate(sentiment = positive - negative) 
+```
+
+3.8 create a plot
+```{r}
+tidy_news1 %>%
+  ggplot() + 
+  geom_point(aes(x=reorder(newspaper, -sentiment), y=sentiment)) + 
+  coord_flip() +
+  xlab("Newspapers") +  
+  ylab("Overall tweet sentiment (negative to positive)") + 
+  theme_minimal() 
+```
+```{r}
+# 保存当前环境到文件
+save.image(file = "my_environment.RData")
+```
+
+
+4. Don't forget to 'knit' to produce your final html output for the exercise.
+
